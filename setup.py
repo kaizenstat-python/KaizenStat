@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="kaizenstat",
-    version="0.5.0",
+    version="0.5.1",
     author="Masuddar Rahman",
     url="https://www.kaizenstat.com",
     description="Data Health Measurement and ML Model Debugging Framework",
@@ -33,7 +33,7 @@ setup(
         ],
     },
     classifiers=[
-        "Development Status :: 4 - Beta",
+        "Development Status :: 5 - Production/Stable",
         "Intended Audience :: Developers",
         "Intended Audience :: Science/Research",
         "Topic :: Scientific/Engineering :: Artificial Intelligence",

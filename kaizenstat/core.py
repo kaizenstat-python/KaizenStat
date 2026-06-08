@@ -210,7 +210,7 @@ class KaizenStat:
         ask(query)               → Conversational AI support
         ask_followup(query)      → Conversational AI follow-up support
     """
-    DEFAULT_API_KEY = "REDACTED"
+    DEFAULT_API_KEY = None  # API key should be set via environment variable or passed at runtime
     _last_context = None
     _conversation_history = []
 
