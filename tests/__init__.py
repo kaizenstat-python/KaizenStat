@@ -1,0 +1,1 @@
+"""KaizenStat test suite."""

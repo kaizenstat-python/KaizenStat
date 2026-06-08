@@ -1,0 +1,17 @@
+[run]
+source = kaizenstat
+omit =
+    # v0.2 legacy engine — requires live Anthropic API, replaced by v0.3 modular architecture
+    kaizenstat/core.py
+    kaizenstat/cli.py
+
+[report]
+exclude_lines =
+    # Standard pragma
+    pragma: no cover
+    # Abstract methods
+    raise NotImplementedError
+    # Type-checking blocks
+    if TYPE_CHECKING:
+    # Unreachable defensive code
+    pass

@@ -1,0 +1,15 @@
+{
+  "shape": [
+    200,
+    4
+  ],
+  "missing": {},
+  "dropped_cols": [
+    "user_id"
+  ],
+  "issues": [
+    "imbalance"
+  ],
+  "model": "GradientBoosting",
+  "score": 0.63
+}

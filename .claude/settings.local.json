@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -m pytest tests/test_precision_sweep.py -x --tb=short -q)",
+      "Bash(sed -n '928,935p' /Users/masuddarrahaman/Downloads/KaizenStat-Library/kaizenstat/debug/debugger.py)",
+      "Bash(sed -n '947,955p' /Users/masuddarrahaman/Downloads/KaizenStat-Library/kaizenstat/debug/debugger.py)"
+    ]
+  }
+}

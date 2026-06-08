@@ -1,0 +1,385 @@
+Metadata-Version: 2.4
+Name: kaizenstat
+Version: 0.4.1
+Summary: Data Health Measurement and ML Model Debugging Framework
+Home-page: https://www.kaizenstat.com
+Author: Masuddar Rahman
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: Science/Research
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: pandas>=1.3.0
+Requires-Dist: numpy>=1.21.0
+Requires-Dist: scikit-learn>=1.1.0
+Requires-Dist: scipy>=1.7.0
+Requires-Dist: rich>=12.0.0
+Requires-Dist: joblib>=1.1.0
+Requires-Dist: typer>=0.9.0
+Provides-Extra: ai
+Requires-Dist: anthropic>=0.20.0; extra == "ai"
+Provides-Extra: gpu
+Requires-Dist: xgboost; extra == "gpu"
+Requires-Dist: lightgbm; extra == "gpu"
+Provides-Extra: fast
+Requires-Dist: polars; extra == "fast"
+Provides-Extra: all
+Requires-Dist: anthropic>=0.20.0; extra == "all"
+Requires-Dist: xgboost; extra == "all"
+Requires-Dist: lightgbm; extra == "all"
+Requires-Dist: polars; extra == "all"
+Requires-Dist: streamlit; extra == "all"
+Dynamic: author
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: license-file
+Dynamic: provides-extra
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
+
+# KaizenStat
+
+**[www.kaizenstat.com](https://www.kaizenstat.com/)**
+
+[![PyPI Version](https://img.shields.io/pypi/v/kaizenstat.svg?style=flat-square&color=blue)](https://pypi.org/project/kaizenstat/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
+[![Python Version](https://img.shields.io/badge/python-3.8%2B-blue.svg?style=flat-square)](https://www.python.org/downloads/)
+
+**KaizenStat** is a structured Python framework for Data Health Measurement and ML Model Debugging. It enforces a clean, opinionated pipeline — **Health → Validate → Fix → Train → Debug → Improve** — where every decision is explained, scored, and reproducible.
+
+---
+
+## Install
+
+```bash
+pip install kaizenstat
+```
+
+Optional extras:
+
+```bash
+pip install "kaizenstat[ai]"   # Anthropic Claude AI advisor
+pip install "kaizenstat[gpu]"  # XGBoost + LightGBM
+pip install "kaizenstat[all]"  # Everything
+```
+
+**Requirements:** Python ≥ 3.8, scikit-learn ≥ 1.1.0, scipy ≥ 1.7.0
+
+---
+
+## Quick Start
+
+```python
+import pandas as pd
+from kaizenstat import DataDoctor
+
+df = pd.read_csv("data.csv")
+
+doctor = DataDoctor()
+doctor.fit(df, target="churn")
+
+doctor.health()        # Data Health Score 0–100
+doctor.validate()      # Normality, multicollinearity, leakage checks
+doctor.fix(safe=True)  # Preview then apply safe corrections
+doctor.train()         # Auto-benchmark + train best model
+doctor.debug_model()   # Root-cause failure analysis
+doctor.improve()       # Prioritised improvement suggestions
+doctor.report()        # Terminal summary + HTML export
+```
+
+---
+
+## CLI — All Commands
+
+The `kz` command is the single entry point. Every command takes a CSV file as input.
+
+### Data Commands
+
+```bash
+kz health   data.csv --target churn
+```
+Compute and display the **Data Health Score** (0–100) with a penalty breakdown.
+
+```bash
+kz validate data.csv --target churn
+```
+Run **statistical assumption checks**: normality, multicollinearity (VIF), skewness, and leakage detection.
+
+```bash
+kz fix data.csv --target churn --preview
+kz fix data.csv --target churn -o data_fixed.csv
+```
+**Preview or apply safe data corrections.** `--preview` shows the plan without touching the file. `-o` saves the cleaned CSV.
+
+```bash
+kz improve data.csv --target churn
+```
+Print a **prioritised list of improvements** — what to fix next for the best impact.
+
+### Model Commands
+
+```bash
+kz train data.csv churn
+kz train data.csv churn --cv 5 --export model.joblib
+```
+**Benchmark models and train the best one.** Leakage-free: test set is held out before benchmarking. `--export` saves the pipeline.
+
+```bash
+kz debug data.csv churn
+```
+**Deep-dive model failure analysis.** Returns a label (`overfitting`, `data_leakage`, `underfitting`, etc.) with severity, confidence, and fix suggestions.
+
+```bash
+kz export data.csv churn -o model.joblib
+```
+Train the best model and **save it to a .joblib file** — ready for production inference.
+
+```bash
+kz codegen data.csv churn -o pipeline.py
+```
+**Generate a standalone Python script** that reproduces the full training pipeline — no KaizenStat dependency needed in production.
+
+### Report Commands
+
+```bash
+kz report data.csv --target churn -o report.html --open
+```
+Generate a **full HTML pipeline report** (health score, validation issues, debug section, improvement plan). `--open` opens it in the browser.
+
+### Full Pipeline
+
+```bash
+kz auto data.csv churn
+kz auto data.csv churn -o my_report.html
+```
+**Run the complete pipeline in one command**: health → validate → fix → train → debug → improve → report.
+
+---
+
+## Command Reference
+
+| Command | What it does |
+|---|---|
+| `kz health` | Data Health Score 0–100 |
+| `kz validate` | Statistical + leakage checks |
+| `kz fix` | Preview and apply safe data fixes |
+| `kz train` | Benchmark models, train the best |
+| `kz debug` | Root-cause model failure analysis |
+| `kz improve` | Prioritised improvement suggestions |
+| `kz export` | Train + save model to .joblib |
+| `kz codegen` | Generate standalone Python training script |
+| `kz report` | Generate HTML pipeline report |
+| `kz auto` | Full pipeline in one shot |
+
+---
+
+## Python API
+
+### DataDoctor (recommended)
+
+```python
+from kaizenstat import DataDoctor
+
+doctor = DataDoctor()
+doctor.fit(df, target="y")
+doctor.health()
+doctor.validate()
+doctor.fix(safe=True)
+doctor.train(cv=5)
+doctor.debug_model()
+doctor.improve()
+doctor.report(output_path="report.html", open_browser=True)
+
+# Export model and generate script
+doctor.export_model(path="model.joblib")
+doctor.codegen(output_path="pipeline.py")
+```
+
+### Module-Level API
+
+```python
+from kaizenstat import health, validate, fix, model, debug, improve
+
+health.score(df, target="y")                          # → float 0–100
+health.report(df, target="y")                         # → HealthResult
+
+validate.assumptions(df, target="y")                  # → ValidationReport
+validate.leakage(df, target="y")                      # → ValidationReport
+
+plan = fix.plan(df, target="y", safe=True)            # → FixPlan (preview table)
+fixed_df = plan.apply(df)                             # → new DataFrame, original untouched
+
+model.benchmark(df, target="y")                       # → BenchmarkResult
+model.train_best(df, target="y")                      # → TrainResult
+
+debug.model_failure(pipe, X_tr, X_te, y_tr, y_te)    # → DebugResult
+
+improve.suggest(df, target="y",
+    health_result=hr, debug_result=dr)                # → ImprovementReport
+```
+
+---
+
+## Architecture
+
+```
+kaizenstat/
+├── __init__.py                 # Public API + v0.2 backward compat
+├── doctor/data_doctor.py       # DataDoctor orchestrator
+├── health/scorer.py            # 0–100 Data Health Score with penalty breakdown
+├── validate/checker.py         # Normality, VIF, leakage, skewness checks
+├── fix/engine.py               # Preview-first FixPlan — safe, typed corrections
+├── model/trainer.py            # Benchmark + train_best (clean train/test split)
+├── debug/debugger.py           # Priority-based model diagnosis engine
+├── improve/suggester.py        # Rule-based improvement suggestions
+├── intelligence/ai_advisor.py  # Optional Anthropic Claude integration
+├── output/reporter.py          # HTML report, model export, codegen
+├── cli/main.py                 # kz CLI (Typer)
+└── utils/helpers.py            # Shared utilities
+```
+
+---
+
+## Data Health Score
+
+Scores your dataset **0–100** across 8 penalty categories:
+
+| Penalty | Max Deduction | Trigger |
+|---|---|---|
+| Missing Values | −20 | Any column with NaN |
+| Duplicate Rows | −10 | Exact row duplicates |
+| Class Imbalance | −20 | Minority class < 10% |
+| Outliers | −10 | > 1% rows beyond 3×IQR |
+| High Skewness | −10 | \|skew\| > 3 |
+| Constant Features | −5 | Zero-variance columns |
+| High Cardinality | −8 | Categorical > 50 unique values |
+| Leakage Proxy | −20 | Feature correlation > 0.98 with target |
+
+**Grades:** A (≥90) · B (≥80) · C (≥70) · D (≥60) · F (<60)
+
+---
+
+## Model Debug Engine
+
+Uses a **priority-based classifier** to diagnose model performance from `train_score` and `test_score`:
+
+| Label | Condition | Severity | Confidence |
+|---|---|---|---|
+| `data_leakage` | train = 1.0 AND test = 1.0 | CRITICAL | 0.99 |
+| `leakage_risk` | both ≥ 0.98 | HIGH | 0.95 |
+| `data_issue` | test > train | CRITICAL | 0.98 |
+| `severe_underfitting` | both ≤ 0.60 | CRITICAL | 0.95 |
+| `underfitting` | both ≤ 0.70 | HIGH | 0.90 |
+| `excellent` | gap ≤ 0.05 AND test ≥ 0.90 | LOW | 0.95 |
+| `healthy` | gap ≤ 0.05 AND test ≥ 0.80 | LOW | 0.90 |
+| `acceptable` | gap ≤ 0.05 | LOW | 0.80 |
+| `overfitting_risk` | 0.05 < gap ≤ 0.10 | MEDIUM | 0.75 |
+| `overfitting` | 0.10 < gap ≤ 0.20 | HIGH | 0.85 |
+| `severe_overfitting` | gap > 0.20 | CRITICAL | 0.95 |
+| `weak_model` | gap > 0.15 AND test < 0.70 *(override)* | HIGH | 0.90 |
+| `broken_model` | gap > 0.30 AND test < 0.60 *(override)* | CRITICAL | 0.98 |
+
+Each `DebugResult` includes `label`, `severity`, `confidence`, `health_score` (0–100), `gap`, `avg_score`, `diagnosis`, and `fix_suggestions`.
+
+---
+
+## Fix Engine
+
+The fix engine **never modifies data silently**:
+
+```python
+# 1. Preview — shows every planned action with risk level
+plan = fix.plan(df, target="churn", safe=True)
+
+# 2. Apply — returns a NEW DataFrame; original df is untouched
+fixed_df = plan.apply(df)
+```
+
+`safe=True` (default) restricts to `LOW`-risk actions only.
+
+**Available actions:** `drop_column`, `drop_duplicates`, `drop_rows_missing_target`, `fill_median`, `fill_mode`, `clip_outliers`, `log1p_transform`, `label_encode`
+
+---
+
+## Train + Evaluate (No Leakage)
+
+`train_best` splits the data **before** benchmarking so the test set is never seen during training:
+
+```
+1. Split df → X_train / X_test  (20% held out)
+2. Run benchmark CV on X_train only
+3. Fit best model on X_train
+4. Evaluate on X_test  ← truly unseen
+```
+
+This prevents the inflated train=1.0/test=1.0 pattern caused by fitting on full data and then scoring on a split of the same data.
+
+---
+
+## AI Advisor (Optional)
+
+```python
+from kaizenstat import intelligence
+
+intelligence.init(api_key="sk-ant-...")  # or set ANTHROPIC_API_KEY
+
+intelligence.advise(health_result=hr, debug_result=dr, validation_result=vr)
+intelligence.ask("Why is my model underperforming?")
+```
+
+Requires `pip install "kaizenstat[ai]"`. Defaults to `claude-sonnet-4-6`.
+
+> The AI advisor is a Python API only — it is not exposed as a CLI command since it requires an API key and interactive context.
+
+---
+
+## Result Types
+
+| Class | Key Fields |
+|---|---|
+| `HealthResult` | `score`, `grade`, `risk_level`, `penalties`, `summary` |
+| `ValidationReport` | `passed`, `issues`, `checks_run` |
+| `FixPlan` | `actions`, `safe`; `.apply(df) → DataFrame` |
+| `TrainResult` | `model_name`, `task`, `train_score`, `test_score`, `metrics`, `pipeline` |
+| `DebugResult` | `label`, `severity`, `confidence`, `health_score`, `gap`, `avg_score`, `diagnosis`, `root_cause` |
+| `ImprovementReport` | `suggestions`, `top_priority` |
+
+All result objects have a `.display()` method for rich terminal output.
+
+---
+
+## Developer Setup
+
+```bash
+git clone https://github.com/masuddarrahaman/KaizenStat-Library.git
+cd KaizenStat-Library
+pip install -e ".[all]"
+```
+
+---
+
+## Backward Compatibility
+
+v0.2.x imports continue to work unchanged:
+
+```python
+from kaizenstat import KaizenStat, DataEngine, detect_device
+```
+
+---
+
+## License
+
+MIT © Masuddar Rahman — [www.kaizenstat.com](https://www.kaizenstat.com/)

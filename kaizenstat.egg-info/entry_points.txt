@@ -1,0 +1,2 @@
+[console_scripts]
+kz = kaizenstat.cli.main:main
