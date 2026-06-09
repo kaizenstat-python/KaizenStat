@@ -11,6 +11,8 @@
 
 **KaizenStat** is a structured Python framework for Data Health Measurement and ML Model Debugging. It enforces a clean, opinionated pipeline — **Health → Validate → Fix → Train → Debug → Improve** — where every decision is explained, scored, and reproducible.
 
+> **v0.5.3 — Polars-powered `load()`**: One command loads any file or URL (CSV, Excel, Parquet, JSON, Feather) using **Polars (Rust)** under the hood — 10–100× faster than pandas on large files. Automatically shows shape, dtypes, missing values, and a 5-row preview. Polars installs automatically on first use. Also fixes pandas 2.x `StringDtype` compatibility.
+>
 > **v0.5.0** adds full NLP / text data support (auto-detected, zero API changes), a production-readiness Trust Layer, text self-healing with `auto_improve_text()`, and leakage detection for text data.
 >
 > **Premium Engine (v0.5.1)**: StackingClassifier ensemble (outperforms voting), 2-stage progressive hyperparameter tuning, ExtraTrees in the model pool, model calibration (Platt scaling), multi-pipeline text benchmark with char n-grams, optional sentence embeddings, failure clustering by subgroup, data-vs-model blame diagnosis, and quantified expected-gain suggestions.
@@ -74,13 +76,12 @@ pip install "kaizenstat[all]"   # Everything
 ## Quick Start
 
 ```python
-import pandas as pd
 from kaizenstat import DataDoctor
 
-df = pd.read_csv("data.csv")
-
 doctor = DataDoctor()
-doctor.fit(df, target="churn")      # auto-detects tabular vs text mode
+doctor.load("data.csv")             # CSV, Excel, Parquet, JSON, Feather, URL — one command
+                                    # Powered by Polars (Rust). Shows shape, dtypes, preview automatically.
+doctor.fit(target="churn")          # auto-detects tabular vs text mode
 
 doctor.health()                     # Data Health Score 0–100
 doctor.validate()                   # statistical + leakage checks
@@ -94,10 +95,9 @@ doctor.report()                     # terminal summary + HTML export
 **Works identically for text data** — no API changes:
 
 ```python
-df = pd.read_csv("reviews.csv")     # has a "text" column + "sentiment" label
-
 doctor = DataDoctor()
-doctor.fit(df, target="sentiment")  # → Mode: TEXT ('text')
+doctor.load("reviews.csv")          # has a "text" column + "sentiment" label
+doctor.fit(target="sentiment")      # → Mode: TEXT ('text')
 
 doctor.health()                     # text quality: noise, duplicates, vocabulary, imbalance
 doctor.validate()                   # token skew, stopword dominance, label leakage
