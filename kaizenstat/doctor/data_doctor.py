@@ -287,8 +287,9 @@ class DataDoctor:
         else:
             validate_dataframe(df, target)
             self._df = df.copy()
-            # Colab/pandas 2.x uses StringDtype which np.issubdtype can't handle
-            self._df = self._df.convert_dtypes(convert_string=False)
+
+        # Normalize pandas 2.x extension dtypes (StringDtype etc.) — always, regardless of load path
+        self._df = self._df.convert_dtypes(convert_string=False)
 
         if target is not None:
             # Validate target exists in whichever df we have
