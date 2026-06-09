@@ -38,6 +38,34 @@ from kaizenstat.validate.text_checker import TextValidator
 console = Console()
 
 
+def _normalize_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+    """Cast pandas 2.x / Polars extension dtypes to numpy-compatible equivalents.
+
+    Polars to_pandas() and pandas 2.x introduce StringDtype, Int64Dtype, etc.
+    np.issubdtype cannot handle these, so we convert them to plain object/int64/float64.
+    """
+    new_cols = {}
+    for col in df.columns:
+        dtype = df[col].dtype
+        dtype_name = type(dtype).__name__
+        # StringDtype → object
+        if dtype_name == "StringDtype" or getattr(dtype, "name", "") == "string":
+            new_cols[col] = df[col].astype(object)
+        # Nullable integer types (Int8, Int16, Int32, Int64) → float64 to preserve NaN
+        elif dtype_name in ("Int8Dtype", "Int16Dtype", "Int32Dtype", "Int64Dtype",
+                            "UInt8Dtype", "UInt16Dtype", "UInt32Dtype", "UInt64Dtype"):
+            new_cols[col] = df[col].astype("float64")
+        # Nullable boolean → bool (object fallback if NaN present)
+        elif dtype_name == "BooleanDtype":
+            new_cols[col] = df[col].astype(object)
+    if new_cols:
+        df = df.copy()
+        for col, series in new_cols.items():
+            df[col] = series
+    return df
+
+
+
 @dataclass
 class ComparisonResult:
     """Before-vs-after result from auto_improve()."""
@@ -193,10 +221,7 @@ class DataDoctor:
 
         elapsed = time.perf_counter() - t0
 
-        # Normalize pandas 2.x extension dtypes
-        df = df.convert_dtypes(convert_string=False)
-
-        self._df = df
+        self._df = _normalize_dtypes(df)
         self._fixed_df = None
         self._target = None
         self._health_result = None
@@ -288,8 +313,8 @@ class DataDoctor:
             validate_dataframe(df, target)
             self._df = df.copy()
 
-        # Normalize pandas 2.x extension dtypes (StringDtype etc.) — always, regardless of load path
-        self._df = self._df.convert_dtypes(convert_string=False)
+        # Normalize pandas 2.x / Polars extension dtypes so np.issubdtype never sees StringDtype etc.
+        self._df = _normalize_dtypes(self._df)
 
         if target is not None:
             # Validate target exists in whichever df we have
