@@ -10,11 +10,20 @@ import pandas as pd
 
 def detect_task_type(y: pd.Series) -> str:
     """Return 'classification' or 'regression' from target series."""
-    if y.dtype == "object" or y.dtype.name == "category":
+    # Normalize pandas 2.x extension dtypes (StringDtype, etc.) to numpy-compatible
+    try:
+        y = y.astype(object) if not hasattr(y.dtype, 'kind') else y
+    except Exception:
+        pass
+    dtype = y.dtype
+    if dtype == "object" or dtype.name == "category" or dtype.name == "string":
         return "classification"
-    if np.issubdtype(y.dtype, np.floating):
-        return "regression"
-    if np.issubdtype(y.dtype, np.integer) and y.nunique() <= 20:
+    try:
+        if np.issubdtype(dtype, np.floating):
+            return "regression"
+        if np.issubdtype(dtype, np.integer) and y.nunique() <= 20:
+            return "classification"
+    except TypeError:
         return "classification"
     return "regression"
 
