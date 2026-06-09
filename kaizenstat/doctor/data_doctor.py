@@ -116,74 +116,145 @@ class DataDoctor:
 
     def load(self, path: str, **kwargs) -> "DataDoctor":
         """
-        Load any file type or URL into the doctor — no pandas boilerplate needed.
+        Load any file or URL in one command — no pandas boilerplate needed.
 
-        Supported formats: .csv, .tsv, .xlsx, .xls, .parquet, .json, .jsonl, .feather
-        Also accepts HTTP/HTTPS URLs (any supported format).
+        Supported: .csv, .tsv, .xlsx, .xls, .parquet, .json, .jsonl, .feather
+        Also accepts HTTP/HTTPS URLs.
 
-        Args:
-            path:    File path or URL to load.
-            **kwargs: Extra keyword arguments forwarded to the underlying pandas reader.
+        Uses Polars (Rust) when available for fast loading, falls back to pandas.
 
         Example::
 
             doctor = DataDoctor()
             doctor.load("titanic.csv")
-            doctor.load("data.xlsx")
-            doctor.load("https://example.com/data.csv")
+            doctor.load("https://example.com/data.parquet")
             doctor.fit(target="Survived")
         """
+        import time
+        from rich.table import Table
+        from rich.text import Text
+
         p = path.strip()
         is_url = p.startswith("http://") or p.startswith("https://")
-
-        # Determine extension: strip query strings from URLs first
         raw_ext = p.split("?")[0].split("#")[0].rsplit(".", 1)
         ext = ("." + raw_ext[-1].lower()) if len(raw_ext) == 2 else ""
 
+        # Try Polars (Rust) first for speed; fall back to pandas
+        engine = "pandas"
+        t0 = time.perf_counter()
         try:
+            import polars as pl
             if ext in (".csv", ".tsv", ""):
                 sep = kwargs.pop("sep", "\t" if ext == ".tsv" else ",")
-                df = pd.read_csv(p, sep=sep, **kwargs)
-            elif ext in (".xlsx", ".xls"):
-                df = pd.read_excel(p, **kwargs)
+                df = pl.read_csv(p, separator=sep, **{k: v for k, v in kwargs.items() if k in ("has_header", "null_values", "skip_rows", "n_rows")}).to_pandas()
             elif ext == ".parquet":
-                df = pd.read_parquet(p, **kwargs)
-            elif ext in (".json",):
-                df = pd.read_json(p, **kwargs)
+                df = pl.read_parquet(p).to_pandas()
+            elif ext == ".json":
+                df = pl.read_json(p).to_pandas()
             elif ext == ".jsonl":
-                df = pd.read_json(p, lines=True, **kwargs)
-            elif ext == ".feather":
-                df = pd.read_feather(p, **kwargs)
+                df = pl.read_ndjson(p).to_pandas()
+            elif ext in (".feather", ".ipc", ".arrow"):
+                df = pl.read_ipc(p).to_pandas()
             else:
-                # Unknown extension — try CSV as fallback
-                df = pd.read_csv(p, **kwargs)
-        except Exception as exc:
-            raise ValueError(
-                f"Could not load '{path}'. "
-                f"Supported formats: csv, tsv, xlsx, xls, parquet, json, jsonl, feather.\n"
-                f"Original error: {exc}"
-            ) from exc
+                raise ImportError("unsupported by polars")
+            engine = "polars"
+        except Exception:
+            # Polars unavailable or unsupported format — use pandas
+            try:
+                if ext in (".csv", ".tsv", ""):
+                    sep = kwargs.pop("sep", "\t" if ext == ".tsv" else ",")
+                    df = pd.read_csv(p, sep=sep, **kwargs)
+                elif ext in (".xlsx", ".xls"):
+                    df = pd.read_excel(p, **kwargs)
+                elif ext == ".parquet":
+                    df = pd.read_parquet(p, **kwargs)
+                elif ext == ".json":
+                    df = pd.read_json(p, **kwargs)
+                elif ext == ".jsonl":
+                    df = pd.read_json(p, lines=True, **kwargs)
+                elif ext in (".feather", ".ipc", ".arrow"):
+                    df = pd.read_feather(p, **kwargs)
+                else:
+                    df = pd.read_csv(p, **kwargs)
+            except Exception as exc:
+                raise ValueError(
+                    f"Could not load '{path}'.\n"
+                    f"Supported: csv, tsv, xlsx, xls, parquet, json, jsonl, feather\n"
+                    f"Error: {exc}"
+                ) from exc
+
+        elapsed = time.perf_counter() - t0
+
+        # Normalize pandas 2.x extension dtypes
+        df = df.convert_dtypes(convert_string=False)
 
         self._df = df
         self._fixed_df = None
         self._target = None
-        # Reset cached results
         self._health_result = None
         self._validation_result = None
         self._train_result = None
         self._debug_result = None
         self._improvement_report = None
 
-        rows, cols = df.shape
-        source = "URL" if is_url else "file"
-        console.print(Panel.fit(
-            f"[bold cyan]Loaded {source}:[/bold cyan] {p}\n"
-            f"Shape: {rows:,} rows × {cols} columns\n"
-            f"Columns: {list(df.columns)}\n\n"
-            f"[dim]Next: call doctor.fit(target='column_name')[/dim]",
-            title="[bold]DataDoctor.load[/bold]",
-            border_style="cyan",
-        ))
+        rows, cols_count = df.shape
+        mem_mb = df.memory_usage(deep=True).sum() / 1024 / 1024
+        source_label = "URL" if is_url else "file"
+        engine_label = f"[green]Polars ⚡[/green]" if engine == "polars" else "[dim]pandas[/dim]"
+
+        # ── Summary panel ──────────────────────────────────────────────────
+        summary = (
+            f"[bold cyan]{source_label}:[/bold cyan] {p}\n"
+            f"[bold]{rows:,}[/bold] rows  ×  [bold]{cols_count}[/bold] columns  "
+            f"│  {mem_mb:.2f} MB  │  {elapsed:.2f}s  │  engine: {engine_label}\n"
+        )
+
+        # ── dtype breakdown ────────────────────────────────────────────────
+        numeric_cols  = df.select_dtypes(include="number").columns.tolist()
+        object_cols   = df.select_dtypes(include=["object", "category"]).columns.tolist()
+        other_cols    = [c for c in df.columns if c not in numeric_cols and c not in object_cols]
+
+        summary += (
+            f"\n[bold]Numeric[/bold] ({len(numeric_cols)}): {numeric_cols[:8]}"
+            + (" …" if len(numeric_cols) > 8 else "") + "\n"
+            f"[bold]Categorical[/bold] ({len(object_cols)}): {object_cols[:8]}"
+            + (" …" if len(object_cols) > 8 else "")
+        )
+        if other_cols:
+            summary += f"\n[bold]Other[/bold] ({len(other_cols)}): {other_cols[:8]}"
+
+        # ── missing values ─────────────────────────────────────────────────
+        missing = df.isnull().sum()
+        missing_cols = missing[missing > 0]
+        if len(missing_cols):
+            summary += f"\n\n[yellow]Missing values in {len(missing_cols)} column(s):[/yellow] "
+            summary += "  ".join(f"{c}={v}" for c, v in missing_cols.items())
+        else:
+            summary += "\n\n[green]✓ No missing values[/green]"
+
+        summary += f"\n\n[dim]Next → doctor.fit(target='column_name')[/dim]"
+
+        console.print(Panel(summary, title="[bold]📂 KaizenStat · Load[/bold]", border_style="cyan", expand=False))
+
+        # ── Preview table (first 5 rows) ───────────────────────────────────
+        preview = Table(show_header=True, header_style="bold magenta", show_lines=True, expand=False)
+        display_cols = list(df.columns[:10])
+        if len(df.columns) > 10:
+            console.print(f"[dim]Showing first 10 of {cols_count} columns[/dim]")
+
+        for col in display_cols:
+            preview.add_column(str(col), overflow="ellipsis", max_width=14, no_wrap=True)
+
+        def _fmt(val):
+            if isinstance(val, float):
+                return f"{val:.4f}"
+            return str(val)
+
+        for _, row in df.head(5).iterrows():
+            preview.add_row(*[_fmt(row[c]) for c in display_cols])
+
+        console.print(preview)
+
         return self
 
     # ------------------------------------------------------------------ #
