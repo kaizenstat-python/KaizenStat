@@ -358,7 +358,18 @@ class ModelTrainer:
         y = df[target].dropna()
         df = df.loc[y.index]
         X = df.drop(columns=[target])
-        X = X.apply(pd.to_numeric, errors="ignore")
+        # Only coerce object columns that look numeric (e.g. "3.14") — leave string cols
+        # like Sex/Embarked as object so the OHE preprocessor can encode them properly.
+        def _try_numeric(col):
+            if col.dtype != object:
+                return col
+            converted = pd.to_numeric(col, errors="coerce")
+            # Keep conversion only if ≥80% of non-null values converted successfully
+            non_null = col.notna().sum()
+            if non_null > 0 and converted.notna().sum() / non_null >= 0.8:
+                return converted
+            return col
+        X = X.apply(_try_numeric)
 
         task = detect_task_type(y)
         le = None

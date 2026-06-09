@@ -10,20 +10,15 @@ import pandas as pd
 
 def detect_task_type(y: pd.Series) -> str:
     """Return 'classification' or 'regression' from target series."""
-    # Normalize pandas 2.x extension dtypes (StringDtype, etc.) to numpy-compatible
-    try:
-        y = y.astype(object) if not hasattr(y.dtype, 'kind') else y
-    except Exception:
-        pass
     dtype = y.dtype
-    if dtype == "object" or dtype.name == "category" or dtype.name == "string":
+    # String / category / unknown extension types → classification
+    if dtype == "object" or dtype.name in ("category", "string"):
         return "classification"
-    try:
-        if np.issubdtype(dtype, np.floating):
-            return "regression"
-        if np.issubdtype(dtype, np.integer) and y.nunique() <= 20:
-            return "classification"
-    except TypeError:
+    if not hasattr(dtype, 'kind'):
+        return "classification"
+    if dtype.kind == 'f':
+        return "regression"
+    if dtype.kind in ('i', 'u') and y.nunique() <= 20:
         return "classification"
     return "regression"
 
@@ -82,7 +77,9 @@ def detect_id_columns(df: pd.DataFrame) -> List[str]:
         if col_lower in id_patterns or col_lower.endswith("_id") or col_lower.startswith("id_"):
             id_cols.append(col)
             continue
-        if df[col].dtype == "object" or np.issubdtype(df[col].dtype, np.integer):
+        _d = df[col].dtype
+        _is_str_or_int = _d == "object" or (hasattr(_d, 'kind') and _d.kind in ('i', 'u'))
+        if _is_str_or_int:
             if df[col].nunique() > len(df) * 0.95 and len(df) > 20:
                 id_cols.append(col)
     return id_cols

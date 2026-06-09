@@ -142,7 +142,9 @@ def _detect_id_columns(df: pd.DataFrame) -> List[str]:
             id_cols.append(col)
             continue
         # Uniqueness-based detection: if a string/int column has >95% unique values
-        if df[col].dtype == "object" or np.issubdtype(df[col].dtype, np.integer):
+        dtype = df[col].dtype
+        is_str_or_int = dtype == "object" or (hasattr(dtype, 'kind') and dtype.kind in ('i', 'u'))
+        if is_str_or_int:
             if df[col].nunique() > len(df) * 0.95 and len(df) > 20:
                 id_cols.append(col)
     return id_cols
@@ -178,13 +180,16 @@ def _detect_task_type(y: pd.Series) -> bool:
     Returns True for classification, False for regression.
     """
     # String or category → always classification
-    if y.dtype == "object" or y.dtype.name == "category":
+    if y.dtype == "object" or y.dtype.name in ("category", "string"):
         return True
-    # Float → always regression (even if few unique values)
-    if np.issubdtype(y.dtype, np.floating):
+    dtype = y.dtype
+    if not hasattr(dtype, 'kind'):
+        return True  # unknown extension type — treat as classification
+    # Float → always regression
+    if dtype.kind == 'f':
         return False
     # Integer → classification only if few unique values
-    if np.issubdtype(y.dtype, np.integer) and y.nunique() <= 50:
+    if dtype.kind in ('i', 'u') and y.nunique() <= 50:
         return True
     return False
 
@@ -442,8 +447,16 @@ class KaizenStat:
         X = df.drop(columns=[target])
         y = df[target].copy()
 
-        # Convert numeric-like strings
-        X = X.apply(pd.to_numeric, errors='ignore')
+        # Only coerce object cols that are genuinely numeric-like; preserve string cols for OHE
+        def _try_numeric(col):
+            if col.dtype != object:
+                return col
+            converted = pd.to_numeric(col, errors="coerce")
+            non_null = col.notna().sum()
+            if non_null > 0 and converted.notna().sum() / non_null >= 0.8:
+                return converted
+            return col
+        X = X.apply(_try_numeric)
 
         if X.shape[1] == 0:
             raise ValueError("No feature columns available after dropping target")

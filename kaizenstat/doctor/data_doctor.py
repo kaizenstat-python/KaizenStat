@@ -1009,8 +1009,10 @@ def _detect_suspicious_columns(df: pd.DataFrame, exclude: List[str]) -> List[str
             continue
 
         # --- ID detection: near-unique integer or string column ---
+        _dtype = df[col].dtype
+        _is_int = hasattr(_dtype, 'kind') and _dtype.kind in ('i', 'u')
         is_numeric_id = (
-            np.issubdtype(df[col].dtype, np.integer)
+            _is_int
             and s.nunique() > n * 0.9
         )
         is_string_id = (
