@@ -1,12 +1,20 @@
 """DataDoctor — the primary sklearn-style orchestrator for the KaizenStat pipeline."""
 from __future__ import annotations
 
+import subprocess
+import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
 from rich.console import Console
 from rich.panel import Panel
+
+try:
+    import polars  # noqa: F401
+except ImportError:
+    Console().print("[dim]Installing polars for fast data loading...[/dim]")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "polars", "-q"])
 
 from kaizenstat.debug.debugger import ModelDebugger
 from kaizenstat.debug.text_debugger import TextModelDebugger
