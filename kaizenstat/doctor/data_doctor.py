@@ -111,19 +111,111 @@ class DataDoctor:
         self._trust = TrustAnalyzer()
 
     # ------------------------------------------------------------------ #
+    # 0. load                                                              #
+    # ------------------------------------------------------------------ #
+
+    def load(self, path: str, **kwargs) -> "DataDoctor":
+        """
+        Load any file type or URL into the doctor — no pandas boilerplate needed.
+
+        Supported formats: .csv, .tsv, .xlsx, .xls, .parquet, .json, .jsonl, .feather
+        Also accepts HTTP/HTTPS URLs (any supported format).
+
+        Args:
+            path:    File path or URL to load.
+            **kwargs: Extra keyword arguments forwarded to the underlying pandas reader.
+
+        Example::
+
+            doctor = DataDoctor()
+            doctor.load("titanic.csv")
+            doctor.load("data.xlsx")
+            doctor.load("https://example.com/data.csv")
+            doctor.fit(target="Survived")
+        """
+        p = path.strip()
+        is_url = p.startswith("http://") or p.startswith("https://")
+
+        # Determine extension: strip query strings from URLs first
+        raw_ext = p.split("?")[0].split("#")[0].rsplit(".", 1)
+        ext = ("." + raw_ext[-1].lower()) if len(raw_ext) == 2 else ""
+
+        try:
+            if ext in (".csv", ".tsv", ""):
+                sep = kwargs.pop("sep", "\t" if ext == ".tsv" else ",")
+                df = pd.read_csv(p, sep=sep, **kwargs)
+            elif ext in (".xlsx", ".xls"):
+                df = pd.read_excel(p, **kwargs)
+            elif ext == ".parquet":
+                df = pd.read_parquet(p, **kwargs)
+            elif ext in (".json",):
+                df = pd.read_json(p, **kwargs)
+            elif ext == ".jsonl":
+                df = pd.read_json(p, lines=True, **kwargs)
+            elif ext == ".feather":
+                df = pd.read_feather(p, **kwargs)
+            else:
+                # Unknown extension — try CSV as fallback
+                df = pd.read_csv(p, **kwargs)
+        except Exception as exc:
+            raise ValueError(
+                f"Could not load '{path}'. "
+                f"Supported formats: csv, tsv, xlsx, xls, parquet, json, jsonl, feather.\n"
+                f"Original error: {exc}"
+            ) from exc
+
+        self._df = df
+        self._fixed_df = None
+        self._target = None
+        # Reset cached results
+        self._health_result = None
+        self._validation_result = None
+        self._train_result = None
+        self._debug_result = None
+        self._improvement_report = None
+
+        rows, cols = df.shape
+        source = "URL" if is_url else "file"
+        console.print(Panel.fit(
+            f"[bold cyan]Loaded {source}:[/bold cyan] {p}\n"
+            f"Shape: {rows:,} rows × {cols} columns\n"
+            f"Columns: {list(df.columns)}\n\n"
+            f"[dim]Next: call doctor.fit(target='column_name')[/dim]",
+            title="[bold]DataDoctor.load[/bold]",
+            border_style="cyan",
+        ))
+        return self
+
+    # ------------------------------------------------------------------ #
     # 1. fit                                                               #
     # ------------------------------------------------------------------ #
 
-    def fit(self, df: pd.DataFrame, target: Optional[str] = None) -> "DataDoctor":
+    def fit(self, df: Optional[pd.DataFrame] = None, target: Optional[str] = None, keep_suspicious: bool = False) -> "DataDoctor":
         """
         Register a dataset with the doctor.
 
         Args:
-            df:     Input pandas DataFrame.
+            df:     Input pandas DataFrame. Omit if you already called load().
             target: Name of the target column (required for supervised tasks).
         """
-        validate_dataframe(df, target)
-        self._df = df.copy()
+        if df is None:
+            if self._df is None:
+                raise RuntimeError(
+                    "No data loaded. Either pass a DataFrame: doctor.fit(df, target='...') "
+                    "or load a file first: doctor.load('file.csv') then doctor.fit(target='...')."
+                )
+            # Already loaded via load() — just update target
+        else:
+            validate_dataframe(df, target)
+            self._df = df.copy()
+
+        if target is not None:
+            # Validate target exists in whichever df we have
+            if target not in self._df.columns:
+                raise ValueError(
+                    f"Target column '{target}' not found. "
+                    f"Available columns: {list(self._df.columns)}"
+                )
         self._target = target
         self._fixed_df = None
 
@@ -134,14 +226,32 @@ class DataDoctor:
         self._debug_result = None
         self._improvement_report = None
 
+        # ---- Auto-detect and warn about ID / high-cardinality text columns ----
+        _excl = [target] if target else []
+        _suspicious = _detect_suspicious_columns(self._df, exclude=_excl)
+        if _suspicious:
+            _names = ", ".join(f"'{c}'" for c in _suspicious)
+            if keep_suspicious:
+                console.print(
+                    f"[dim]ℹ  Keeping potentially problematic columns (keep_suspicious=True): {_names}[/dim]"
+                )
+            else:
+                console.print(
+                    f"[yellow bold]⚠  KaizenStat detected columns that look like IDs or free-text "
+                    f"and may break the ML pipeline:[/yellow bold]\n"
+                    f"   {_names}\n"
+                    f"[dim]   Auto-dropped. To keep them, pass keep_suspicious=True to fit().[/dim]"
+                )
+                self._df = self._df.drop(columns=_suspicious)
+
         # ---- Automatic mode detection (tabular vs text) ----
-        self._text_col = dominant_text_column(df, exclude=[target] if target else None)
+        self._text_col = dominant_text_column(self._df, exclude=[target] if target else None)
         self._mode = "text" if self._text_col is not None else "tabular"
 
-        rows, cols = df.shape
+        rows, cols = self._df.shape
         task_str = ""
         if target:
-            task = detect_task_type(df[target].dropna())
+            task = detect_task_type(self._df[target].dropna())
             task_str = f"  │  Task: {task}"
         mode_str = (f"  │  Mode: [bold]{self._mode.upper()}[/bold]"
                     + (f" ('{self._text_col}')" if self._mode == "text" else ""))
@@ -751,3 +861,70 @@ class DataDoctor:
         target = f", target='{self._target}'" if self._target else ""
         shape = f", shape={self._df.shape}" if fitted else ""
         return f"DataDoctor(fitted={fitted}{shape}{target})"
+
+
+# ---------------------------------------------------------------------------- #
+# Module-level helpers                                                          #
+# ---------------------------------------------------------------------------- #
+
+def _detect_suspicious_columns(df: pd.DataFrame, exclude: List[str]) -> List[str]:
+    """
+    Identify columns that will likely break or degrade the ML pipeline:
+    - Near-unique ID columns (PassengerId, row numbers, UUIDs)
+    - High-cardinality free-text with many words (Name, address, comments)
+
+    These are safe to drop before training — they carry no generalizable signal.
+    """
+    import numpy as np
+
+    suspicious: List[str] = []
+    n = len(df)
+    if n < 10:
+        return suspicious
+
+    # Common ID name patterns (case-insensitive)
+    _ID_NAMES = {
+        "passengerid", "id", "uuid", "guid", "rowid", "row_id",
+        "index", "serial", "record_id", "customerid", "userid", "user_id",
+        "order_id", "orderid", "ticket", "ticket_id",
+    }
+    # Common free-text name patterns
+    _TEXT_NAMES = {"name", "fullname", "full_name", "firstname", "lastname",
+                   "first_name", "last_name", "description", "notes", "comment",
+                   "comments", "address", "street", "cabin"}
+
+    for col in df.columns:
+        if col in exclude:
+            continue
+        col_lower = col.lower().strip()
+        s = df[col].dropna()
+        if s.empty:
+            continue
+
+        # --- ID detection: near-unique integer or string column ---
+        is_numeric_id = (
+            np.issubdtype(df[col].dtype, np.integer)
+            and s.nunique() > n * 0.9
+        )
+        is_string_id = (
+            df[col].dtype == object
+            and s.nunique() > n * 0.9
+            and float(s.astype(str).str.split().str.len().mean()) <= 1.5
+        )
+        named_id = col_lower in _ID_NAMES or col_lower.endswith("_id") or col_lower.endswith("id")
+
+        if is_numeric_id or is_string_id or (named_id and s.nunique() > n * 0.8):
+            suspicious.append(col)
+            continue
+
+        # --- Free-text detection: object column with many words per row ---
+        if df[col].dtype == object:
+            avg_words = float(s.astype(str).str.split().str.len().mean())
+            if col_lower in _TEXT_NAMES:
+                suspicious.append(col)
+                continue
+            # High-cardinality + multi-word = free text (e.g. "Braund, Mr. Owen Harris")
+            if avg_words >= 2.5 and s.nunique() > n * 0.7:
+                suspicious.append(col)
+
+    return suspicious
