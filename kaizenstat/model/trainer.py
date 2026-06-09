@@ -40,6 +40,7 @@ from sklearn.ensemble import (
 )
 from sklearn.feature_selection import SelectKBest, f_regression
 
+from sklearn.base import BaseEstimator
 from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor
 
 from kaizenstat.utils.helpers import (
@@ -51,6 +52,139 @@ from kaizenstat.utils.helpers import (
 
 warnings.filterwarnings("ignore")
 console = Console()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# KaizenStatPipeline — a self-contained sklearn-compatible wrapper that applies
+# the same dtype-normalization used during training before every predict call.
+#
+# WHY: The inner sklearn Pipeline's ColumnTransformer records which columns are
+# numeric (→ StandardScaler) and which are categorical (→ OHE) at fit time.
+# At inference, if a user passes a raw DataFrame with string columns (e.g.
+# Sex='female') that were categorical during training, the pipeline handles them
+# correctly — BUT only if no upstream step has converted them to ints first
+# (e.g. old label_encode from FixEngine).  This wrapper also guards against
+# column order mismatches and missing columns by aligning the input to the
+# training feature set before forwarding to the inner pipeline.
+# ─────────────────────────────────────────────────────────────────────────────
+class KaizenStatPipeline(BaseEstimator):
+    """
+    Production-grade sklearn-compatible wrapper around a trained KaizenStat pipeline.
+
+    Guarantees that raw DataFrames with string / mixed-type columns work correctly
+    at inference time — no manual preprocessing required by the caller.
+
+    Usage (after export_model / joblib.load)::
+
+        model = joblib.load("titanic_model.joblib")
+        pred  = model.predict(new_df)
+        proba = model.predict_proba(new_df)
+    """
+
+    def __init__(self, inner_pipeline: Any, feature_names: List[str],
+                 label_encoder: Optional[Any] = None,
+                 numeric_medians: Optional[Dict[str, float]] = None) -> None:
+        self.inner_pipeline   = inner_pipeline
+        self.feature_names    = feature_names      # ordered list of training feature columns
+        self.label_encoder    = label_encoder
+        self.numeric_medians  = numeric_medians or {}  # col → median for NaN imputation
+
+    # ── sklearn estimator interface ───────────────────────────────────────
+
+    def fit(self, X: pd.DataFrame, y: Any) -> "KaizenStatPipeline":  # noqa: ARG002
+        """Delegates to inner pipeline (already fitted — this is a no-op wrapper)."""
+        return self
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        X_prep = self._prepare_input(X)
+        preds  = self.inner_pipeline.predict(X_prep)
+        if self.label_encoder is not None:
+            try:
+                return self.label_encoder.inverse_transform(preds)
+            except Exception:
+                return preds
+        return preds
+
+    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
+        X_prep = self._prepare_input(X)
+        return self.inner_pipeline.predict_proba(X_prep)
+
+    def score(self, X: pd.DataFrame, y: Any) -> float:
+        X_prep = self._prepare_input(X)
+        return self.inner_pipeline.score(X_prep, y)
+
+    def get_params(self, deep: bool = True) -> Dict[str, Any]:  # noqa: ARG002
+        return {
+            "inner_pipeline": self.inner_pipeline,
+            "feature_names":  self.feature_names,
+            "label_encoder":  self.label_encoder,
+        }
+
+    def set_params(self, **params: Any) -> "KaizenStatPipeline":
+        for k, v in params.items():
+            setattr(self, k, v)
+        return self
+
+    # ── internal ──────────────────────────────────────────────────────────
+
+    def _prepare_input(self, X: pd.DataFrame) -> pd.DataFrame:
+        """
+        Align a raw inference DataFrame to the training feature schema:
+        1. Add any missing columns — numeric missing → NaN, categorical → "__missing__"
+           so sklearn's OHE never sees np.nan in a string column.
+        2. Drop extra columns the model never saw — prevents ColumnTransformer crash.
+        3. Reorder columns to match the training order exactly.
+        4. Apply the same _try_numeric logic used during training — coerces numeric-
+           looking string columns to float while leaving true categoricals as object.
+        """
+        X = X.copy()
+
+        # Determine which training columns are categorical (object) vs numeric,
+        # based on the inner pipeline's ColumnTransformer fitted column lists.
+        _cat_cols: set = set()
+        try:
+            ct = self.inner_pipeline.named_steps.get("prep")
+            if ct is not None:
+                for name, _, cols in ct.transformers_:
+                    if name == "cat":
+                        _cat_cols = set(cols)
+        except Exception:
+            pass
+
+        # Add missing columns with safe fill values
+        for col in self.feature_names:
+            if col not in X.columns:
+                if col in _cat_cols:
+                    X[col] = "__missing__"   # OHE handles unknown via handle_unknown='ignore'
+                else:
+                    X[col] = np.nan
+
+        # Keep only training columns, in training order
+        X = X[self.feature_names]
+
+        # Fill NaN in categorical columns — OHE cannot handle np.nan in strings
+        for col in X.select_dtypes(include="object").columns:
+            X[col] = X[col].fillna("__missing__")
+
+        # Fill NaN in numeric columns with training medians (or 0 as last resort)
+        for col in X.select_dtypes(include="number").columns:
+            if X[col].isna().any():
+                fill_val = self.numeric_medians.get(col, 0.0)
+                X[col] = X[col].fillna(fill_val)
+
+        # Coerce numeric-looking string columns to float (same logic as _prepare)
+        def _try_numeric(col: pd.Series) -> pd.Series:
+            if col.dtype != object:
+                return col
+            converted = pd.to_numeric(col, errors="coerce")
+            non_null = col.notna().sum()
+            if non_null > 0 and converted.notna().sum() / non_null >= 0.8:
+                return converted
+            return col
+
+        X = X.apply(_try_numeric)
+        return X
+
 
 # Hyperparameter search spaces — keyed by model name from _get_models()
 # Wider grids give progressive tuning more room to improve on the coarse pass.
@@ -324,10 +458,26 @@ class ModelTrainer:
         test_score  = pipe.score(X_test,  y_test)
 
         metrics = self._compute_metrics(pipe, X_test, y_test, task)
+
+        # Compute per-column medians from training data for NaN imputation at inference time
+        _num_medians = {
+            col: float(X[col].median())
+            for col in X.select_dtypes(include="number").columns
+        }
+
+        # Wrap in KaizenStatPipeline so the exported model handles raw DataFrames
+        # at inference time — callers never need to preprocess before predict().
+        wrapped_pipe = KaizenStatPipeline(
+            inner_pipeline=pipe,
+            feature_names=list(X.columns),
+            label_encoder=le,
+            numeric_medians=_num_medians,
+        )
+
         result = TrainResult(
             model_name=bm.best_name, task=task,
             train_score=round(train_score, 4), test_score=round(test_score, 4),
-            metrics=metrics, pipeline=pipe, label_encoder=le,
+            metrics=metrics, pipeline=wrapped_pipe, label_encoder=le,
             feature_names=list(X.columns),
             cv_score=cv_score, cv_std=cv_std, best_params=best_params,
         )
@@ -762,10 +912,21 @@ class ModelTrainer:
         test_score  = pipe.score(X_test,  y_test)
         metrics     = self._compute_metrics(pipe, X_test, y_test, task)
 
+        _num_medians = {
+            col: float(X[col].median())
+            for col in X.select_dtypes(include="number").columns
+        }
+        wrapped_pipe = KaizenStatPipeline(
+            inner_pipeline=pipe,
+            feature_names=list(X.columns),
+            label_encoder=le,
+            numeric_medians=_num_medians,
+        )
+
         result = TrainResult(
             model_name=model_name, task=task,
             train_score=round(train_score, 4), test_score=round(test_score, 4),
-            metrics=metrics, pipeline=pipe, label_encoder=le,
+            metrics=metrics, pipeline=wrapped_pipe, label_encoder=le,
             feature_names=list(X.columns),
             cv_score=cv_score, cv_std=cv_std, best_params=best_params,
         )

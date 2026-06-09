@@ -11,7 +11,8 @@ from rich.console import Console
 from rich.panel import Panel
 
 try:
-    import polars  # noqa: F401
+    import polars as _polars_check  # noqa: F401
+    del _polars_check
 except ImportError:
     Console().print("[dim]Installing polars for fast data loading...[/dim]")
     subprocess.check_call([sys.executable, "-m", "pip", "install", "polars", "-q"])
@@ -157,7 +158,10 @@ class DataDoctor:
         Supported: .csv, .tsv, .xlsx, .xls, .parquet, .json, .jsonl, .feather
         Also accepts HTTP/HTTPS URLs.
 
-        Uses Polars (Rust) when available for fast loading, falls back to pandas.
+        Engine selection:
+        - Polars (Rust): CSV/TSV/Parquet/JSON/Feather from local files, large files >10 MB, or
+          when Polars explicitly succeeds. Faster and more memory-efficient.
+        - pandas fallback: Excel files (always), URLs where Polars fails, any other format.
 
         Example::
 
@@ -166,57 +170,85 @@ class DataDoctor:
             doctor.load("https://example.com/data.parquet")
             doctor.fit(target="Survived")
         """
+        import os
         import time
         from rich.table import Table
-        from rich.text import Text
 
         p = path.strip()
         is_url = p.startswith("http://") or p.startswith("https://")
-        raw_ext = p.split("?")[0].split("#")[0].rsplit(".", 1)
+
+        # Extract extension — strip query strings and fragments (e.g. ?token=xyz)
+        clean_path = p.split("?")[0].split("#")[0]
+        raw_ext = clean_path.rsplit(".", 1)
         ext = ("." + raw_ext[-1].lower()) if len(raw_ext) == 2 else ""
 
-        # Try Polars (Rust) first for speed; fall back to pandas
+        # Excel always goes to pandas (Polars does not support .xls/.xlsx)
+        _POLARS_FORMATS = {".csv", ".tsv", ".parquet", ".json", ".jsonl", ".feather", ".ipc", ".arrow", ""}
+        _EXCEL_FORMATS  = {".xlsx", ".xls", ".ods"}
+
+        prefer_polars = ext in _POLARS_FORMATS
+
         engine = "pandas"
+        df: pd.DataFrame = None  # type: ignore[assignment]
+        load_error: Optional[str] = None
+
         t0 = time.perf_counter()
-        try:
-            import polars as pl
-            if ext in (".csv", ".tsv", ""):
-                sep = kwargs.pop("sep", "\t" if ext == ".tsv" else ",")
-                df = pl.read_csv(p, separator=sep, **{k: v for k, v in kwargs.items() if k in ("has_header", "null_values", "skip_rows", "n_rows")}).to_pandas()
-            elif ext == ".parquet":
-                df = pl.read_parquet(p).to_pandas()
-            elif ext == ".json":
-                df = pl.read_json(p).to_pandas()
-            elif ext == ".jsonl":
-                df = pl.read_ndjson(p).to_pandas()
-            elif ext in (".feather", ".ipc", ".arrow"):
-                df = pl.read_ipc(p).to_pandas()
-            else:
-                raise ImportError("unsupported by polars")
-            engine = "polars"
-        except Exception:
-            # Polars unavailable or unsupported format — use pandas
+
+        # ── Attempt 1: Polars (Rust) for supported formats ──────────────
+        if prefer_polars and ext not in _EXCEL_FORMATS:
             try:
+                import polars as pl
+                _polars_kwargs = {k: v for k, v in kwargs.items()
+                                  if k in ("has_header", "null_values", "skip_rows", "n_rows",
+                                           "infer_schema_length", "ignore_errors")}
                 if ext in (".csv", ".tsv", ""):
-                    sep = kwargs.pop("sep", "\t" if ext == ".tsv" else ",")
-                    df = pd.read_csv(p, sep=sep, **kwargs)
-                elif ext in (".xlsx", ".xls"):
-                    df = pd.read_excel(p, **kwargs)
+                    sep = kwargs.get("sep", "\t" if ext == ".tsv" else ",")
+                    df = pl.read_csv(p, separator=sep, **_polars_kwargs).to_pandas()
                 elif ext == ".parquet":
-                    df = pd.read_parquet(p, **kwargs)
+                    df = pl.read_parquet(p).to_pandas()
                 elif ext == ".json":
-                    df = pd.read_json(p, **kwargs)
+                    df = pl.read_json(p).to_pandas()
                 elif ext == ".jsonl":
-                    df = pd.read_json(p, lines=True, **kwargs)
+                    df = pl.read_ndjson(p).to_pandas()
                 elif ext in (".feather", ".ipc", ".arrow"):
-                    df = pd.read_feather(p, **kwargs)
+                    df = pl.read_ipc(p).to_pandas()
+                engine = "polars"
+            except Exception as _polars_exc:
+                load_error = str(_polars_exc)
+                df = None  # type: ignore[assignment]
+
+        # ── Attempt 2: pandas fallback ────────────────────────────────────
+        if df is None:
+            _pd_kwargs = {k: v for k, v in kwargs.items()
+                          if k not in ("has_header", "null_values", "skip_rows", "n_rows",
+                                       "infer_schema_length", "ignore_errors")}
+            try:
+                if ext in (".xlsx", ".xls", ".ods"):
+                    df = pd.read_excel(p, **_pd_kwargs)
+                elif ext in (".csv", ".tsv", ""):
+                    sep = _pd_kwargs.pop("sep", "\t" if ext == ".tsv" else ",")
+                    df = pd.read_csv(p, sep=sep, **_pd_kwargs)
+                elif ext == ".parquet":
+                    df = pd.read_parquet(p, **_pd_kwargs)
+                elif ext == ".json":
+                    df = pd.read_json(p, **_pd_kwargs)
+                elif ext == ".jsonl":
+                    df = pd.read_json(p, lines=True, **_pd_kwargs)
+                elif ext in (".feather", ".ipc", ".arrow"):
+                    df = pd.read_feather(p, **_pd_kwargs)
                 else:
-                    df = pd.read_csv(p, **kwargs)
+                    # Unknown extension — try CSV as last resort
+                    df = pd.read_csv(p, **_pd_kwargs)
+                engine = "pandas"
             except Exception as exc:
+                # Surface a clean, actionable error — include the Polars error if
+                # it was the first attempt, since it may have more context.
+                polars_note = (f"\n[Polars error: {load_error}]" if load_error else "")
                 raise ValueError(
                     f"Could not load '{path}'.\n"
-                    f"Supported: csv, tsv, xlsx, xls, parquet, json, jsonl, feather\n"
-                    f"Error: {exc}"
+                    f"Supported formats: csv, tsv, xlsx, xls, parquet, json, jsonl, feather\n"
+                    f"Error: {exc}{polars_note}\n"
+                    f"Tip: For URLs check connectivity; for Excel files ensure openpyxl is installed."
                 ) from exc
 
         elapsed = time.perf_counter() - t0
@@ -459,6 +491,18 @@ class DataDoctor:
         self._require_fit()
         if not self._target:
             raise ValueError("A target column is required for training. Call fit(df, target=...).")
+
+        # Guard: after fix() some rows may be dropped, leaving only 1 class — fail clearly
+        df_check = self._active_df
+        if self._target in df_check.columns:
+            y_check = df_check[self._target].dropna()
+            if y_check.nunique() < 2:
+                raise ValueError(
+                    f"Target column '{self._target}' has only {y_check.nunique()} unique class(es) "
+                    f"after data cleaning. Need at least 2 classes to train. "
+                    f"Check if fix() dropped too many rows."
+                )
+
         if self._mode == "text":
             self._train_result = self._text_trainer.train_best(
                 self._active_df, self._target, text_col=self._text_col,
@@ -503,9 +547,18 @@ class DataDoctor:
         X = df[self._text_col].fillna("").astype(str) if self._mode == "text" \
             else df.drop(columns=[self._target])
 
-        # Apply the same LabelEncoding the trainer used so pipeline scores are correct
+        # Apply the same LabelEncoding the trainer used so pipeline scores are correct.
+        # Guard against unseen labels that may appear after fix() dropped rows, changing
+        # class distribution — filter to only known labels before transforming.
         le = self._train_result.label_encoder
         if le is not None:
+            known = set(le.classes_)
+            mask = y.isin(known)
+            if not mask.all():
+                n_dropped = int((~mask).sum())
+                console.print(f"[dim]debug_model: dropping {n_dropped} row(s) with labels unseen during training[/dim]")
+                y = y[mask]
+                X = X.loc[y.index] if hasattr(X, "loc") else X[mask]
             y = pd.Series(le.transform(y), index=y.index, name=self._target)
 
         try:
@@ -654,6 +707,7 @@ class DataDoctor:
 
         Requires train() or train_auto() to have been called first.
         Returns {feature: score_drop} sorted descending.
+        Uses the same held-out test split as debug_model() to avoid data leakage.
         """
         self._require_fit()
         if self._train_result is None:
@@ -661,27 +715,35 @@ class DataDoctor:
         if not self._target:
             raise ValueError("A target column is required.")
 
-        from sklearn.model_selection import train_test_split
-        from kaizenstat.utils.helpers import detect_task_type
+        # Reuse the exact same held-out test split from debug_model() when available —
+        # this avoids inflated importance scores from scoring on training data.
+        if self._last_split is not None:
+            _, X_test, _, y_test, _ = self._last_split
+        else:
+            from sklearn.model_selection import train_test_split
+            from kaizenstat.utils.helpers import detect_task_type
 
-        df = self._active_df.copy()
-        df = df.loc[df[self._target].notna()]
-        X  = df.drop(columns=[self._target])
-        y  = df[self._target]
+            df = self._active_df.copy()
+            df = df.loc[df[self._target].notna()]
+            X  = df.drop(columns=[self._target])
+            y  = df[self._target]
 
-        task = detect_task_type(y)
-        le   = self._train_result.label_encoder
-        if le is not None:
-            y = pd.Series(le.transform(y), index=y.index, name=self._target)
+            task = detect_task_type(y)
+            le   = self._train_result.label_encoder
+            if le is not None:
+                known = set(le.classes_)
+                y = y[y.isin(known)]
+                X = X.loc[y.index]
+                y = pd.Series(le.transform(y), index=y.index, name=self._target)
 
-        try:
-            _, X_test, _, y_test = train_test_split(
-                X, y, test_size=0.2,
-                stratify=y if task == "classification" else None,
-                random_state=42,
-            )
-        except ValueError:
-            _, X_test, _, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+            try:
+                _, X_test, _, y_test = train_test_split(
+                    X, y, test_size=0.2,
+                    stratify=y if task == "classification" else None,
+                    random_state=42,
+                )
+            except ValueError:
+                _, X_test, _, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
         return self._debugger.feature_impact(
             self._train_result.pipeline, X_test, y_test, top_n=top_n
@@ -844,12 +906,20 @@ class DataDoctor:
         ))
         self.fix(safe=True)
 
+        # Re-normalize dtypes on the fixed DataFrame — fix() label_encode converts object
+        # columns to ints, which would confuse the OHE preprocessor.  We normalise back
+        # so get_categorical_cols() / get_numeric_cols() see correct dtypes.
+        if self._fixed_df is not None:
+            self._fixed_df = _normalize_dtypes(self._fixed_df)
+
         console.print(Panel.fit(
             f"[bold cyan]Step 3/3[/bold cyan] — Retraining"
             + (" with hyperparameter tuning" if tune else ""),
             border_style="cyan",
         ))
-        self._train_result = None  # force retrain on fixed data
+        self._train_result = None   # force retrain on fixed data
+        self._debug_result = None   # invalidate stale debug split
+        self._last_split   = None
         self.train(tune=tune)
         improved = self._train_result
 
@@ -865,9 +935,16 @@ class DataDoctor:
         """
         Compute a 0–100 Pipeline Confidence Score based on health, validation,
         model stability, and test performance.
+
+        Score breakdown:
+          - Base:         30  (neutral starting point — not inflated before training)
+          - Health:       up to +25 (health_score × 0.25)
+          - Validation:   up to -20 (5 pts per HIGH/MEDIUM issue, capped at 4 issues)
+          - Train score:  up to +30 (test_score × 30, only if trained)
+          - Overfit gap:  up to -20 (gap × 100, capped)
         """
         self._require_fit()
-        score = 50
+        score = 30  # conservative base — reflects "data loaded, not yet trained"
 
         if self._health_result is not None:
             score += int(self._health_result.score * 0.25)
@@ -877,7 +954,10 @@ class DataDoctor:
             score -= min(20, n_issues * 5)
 
         if self._train_result is not None:
-            score += int(self._train_result.test_score * 20)
+            score += int(self._train_result.test_score * 30)
+        else:
+            # Not yet trained — can't claim high confidence
+            score = min(score, 55)
 
         if self._debug_result is not None:
             gap = abs(self._debug_result.gap)

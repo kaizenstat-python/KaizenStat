@@ -133,11 +133,6 @@ def _apply_action(df: pd.DataFrame, action: FixAction) -> pd.DataFrame:
         df[col] = np.log1p(df[col].clip(lower=0))
         return df
 
-    if act == "label_encode":
-        df = df.copy()
-        df[col] = df[col].astype("category").cat.codes
-        return df
-
     if act == "drop_rows_missing_target":
         df = df.copy()
         df = df.dropna(subset=[col])
@@ -202,20 +197,10 @@ class FixEngine:
         actions = self._plan_outliers(df, target)
         return FixPlan(actions=actions, safe=all(a.risk_level == "LOW" for a in actions))
 
-    def encoding(self, df: pd.DataFrame, target: Optional[str] = None) -> FixPlan:
+    def encoding(self, df: pd.DataFrame, target: Optional[str] = None) -> FixPlan:  # noqa: ARG002
+        """Categorical encoding is handled by the sklearn OHE pipeline — returns empty plan."""
         validate_dataframe(df)
-        cat_cols = get_categorical_cols(df, exclude=[target] if target else None)
-        actions = [
-            FixAction(
-                column=col,
-                action="label_encode",
-                reason=f"Categorical feature with {df[col].nunique()} unique values",
-                risk_level="LOW",
-                expected_impact="Enables numeric models to use this feature",
-            )
-            for col in cat_cols
-        ]
-        return FixPlan(actions=actions, safe=True)
+        return FixPlan(actions=[], safe=True)
 
     def imbalance(self, df: pd.DataFrame, target: str) -> str:
         validate_dataframe(df, target)
@@ -346,25 +331,11 @@ class FixEngine:
         return actions
 
     def _plan_categorical_encoding(self, df, target):
-        """Label-encode object/string columns that still remain after missing-value fill."""
-        already_id = {a.column for a in self._plan_id_columns(df, target)}
-        cat_cols = get_categorical_cols(df, exclude=[target] if target else None)
-        actions = []
-        for col in cat_cols:
-            if col in already_id:
-                continue
-            # Only encode columns that have at least 2 unique non-null values
-            n_unique = df[col].dropna().nunique()
-            if n_unique < 2:
-                continue
-            actions.append(FixAction(
-                column=col,
-                action="label_encode",
-                reason=f"Categorical feature with {n_unique} unique values — encode to numeric",
-                risk_level="LOW",
-                expected_impact="Enables numeric models to use this feature directly",
-            ))
-        return actions
+        """Categorical encoding is handled automatically by the OHE preprocessor inside
+        the sklearn Pipeline during train().  FixEngine does NOT label-encode here —
+        doing so would convert object columns to integers, causing get_categorical_cols()
+        to miss them and the OHE step to silently skip them, degrading model quality."""
+        return []
 
     def _plan_outliers(self, df, target):
         num_cols = get_numeric_cols(df, exclude=[target] if target else None)

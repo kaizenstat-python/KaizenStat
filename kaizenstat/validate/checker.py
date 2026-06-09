@@ -118,22 +118,50 @@ class Validator:
 
     def detect_drift(self, X_train: pd.DataFrame, X_test: pd.DataFrame) -> Dict[str, float]:
         """
-        Detect distribution drift between train and test sets using the KS test.
+        Detect distribution drift between train and test sets.
 
-        Returns a dict of {column: p_value} for columns that show statistically
-        significant drift (p < 0.05). An empty dict means no drift detected.
+        Numeric columns: Kolmogorov-Smirnov 2-sample test.
+        Categorical columns: Chi-squared test on value-count distributions (Cramér's V proxy).
+
+        Returns {column: p_value} for features with significant drift (p < 0.05).
+        An empty dict means no drift detected.
         """
-        from scipy.stats import ks_2samp
+        from scipy.stats import ks_2samp, chi2_contingency
 
         drifted: Dict[str, float] = {}
-        num_cols = [c for c in X_train.select_dtypes(include="number").columns
-                    if c in X_test.columns]
+        shared_cols = [c for c in X_train.columns if c in X_test.columns]
 
-        for col in num_cols:
+        for col in shared_cols:
             try:
-                _, p = ks_2samp(X_train[col].dropna(), X_test[col].dropna())
-                if p < 0.05:
-                    drifted[col] = round(p, 6)
+                dtype = X_train[col].dtype
+                is_numeric = dtype.kind in ("f", "i", "u") if hasattr(dtype, "kind") else False
+                is_categorical = dtype == object or str(dtype) in ("category", "string")
+
+                if is_numeric:
+                    a = X_train[col].dropna()
+                    b = X_test[col].dropna()
+                    if len(a) >= 5 and len(b) >= 5:
+                        _, p = ks_2samp(a, b)
+                        if p < 0.05:
+                            drifted[col] = round(p, 6)
+
+                elif is_categorical:
+                    # Build a contingency table: rows = dataset (train/test), cols = categories
+                    all_cats = pd.Index(
+                        pd.concat([X_train[col].dropna(), X_test[col].dropna()]).unique()
+                    )
+                    if len(all_cats) < 2:
+                        continue
+                    train_counts = X_train[col].value_counts().reindex(all_cats, fill_value=0)
+                    test_counts  = X_test[col].value_counts().reindex(all_cats, fill_value=0)
+                    contingency  = np.array([train_counts.values, test_counts.values])
+                    # Only run chi2 if every expected cell is ≥ 1 (small-sample guard)
+                    expected = contingency.sum(axis=0) * contingency.sum(axis=1, keepdims=True) / contingency.sum()
+                    if (expected < 1).any():
+                        continue
+                    _, p, _, _ = chi2_contingency(contingency)
+                    if p < 0.05:
+                        drifted[col] = round(p, 6)
             except Exception:
                 pass
 
