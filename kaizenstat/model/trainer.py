@@ -38,7 +38,7 @@ from sklearn.ensemble import (
     VotingClassifier,
     VotingRegressor,
 )
-from sklearn.feature_selection import SelectKBest, f_regression
+from sklearn.feature_selection import SelectKBest, f_regression, f_classif
 
 from sklearn.base import BaseEstimator
 from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor
@@ -337,8 +337,16 @@ class ModelTrainer:
         X, y, task, le = self._prepare(df, target)
         metric = self._select_metric(task, y)
         models = self._get_models(task, y, extra_models=extra_models)
-        preprocessor = self._build_preprocessor(X)
-        n_cv = min(cv, max(2, len(X) // 50))
+        preprocessor = self._build_preprocessor(X, task=task)
+
+        # Safe CV: never more splits than the smallest class count (classification)
+        # or than floor(n_samples/10) to ensure each fold has enough data.
+        if task == "classification":
+            min_class_count = int(y.value_counts().min())
+            n_cv = min(cv, min_class_count, max(2, len(X) // 20))
+        else:
+            n_cv = min(cv, max(2, len(X) // 20))
+        n_cv = max(2, n_cv)
 
         entries: List[ModelEntry] = []
         best_score = -np.inf
@@ -351,11 +359,15 @@ class ModelTrainer:
                 prog.add_task("", total=None)
                 t0 = time.time()
                 try:
-                    cv_obj = (
-                        StratifiedKFold(n_splits=n_cv, shuffle=True, random_state=42)
-                        if task == "classification" else
-                        KFold(n_splits=n_cv, shuffle=True, random_state=42)
-                    )
+                    if task == "classification" and n_cv >= 2:
+                        try:
+                            cv_obj = StratifiedKFold(n_splits=n_cv, shuffle=True, random_state=42)
+                            # Validate it can actually stratify — catch degenerate cases
+                            list(cv_obj.split(X, y))
+                        except ValueError:
+                            cv_obj = KFold(n_splits=n_cv, shuffle=True, random_state=42)
+                    else:
+                        cv_obj = KFold(n_splits=n_cv, shuffle=True, random_state=42)
                     scores = cross_val_score(pipe, X, y, cv=cv_obj, scoring=metric, n_jobs=-1)
                     elapsed = time.time() - t0
                     mean_score = float(scores.mean())
@@ -508,6 +520,18 @@ class ModelTrainer:
         y = df[target].dropna()
         df = df.loc[y.index]
         X = df.drop(columns=[target])
+
+        # Convert datetime columns to numeric (Unix timestamp in seconds)
+        for col in X.select_dtypes(include=["datetime", "datetimetz"]).columns:
+            try:
+                X[col] = X[col].astype("int64") // 10 ** 9
+            except Exception:
+                X = X.drop(columns=[col])
+
+        # Convert boolean columns to int (True→1, False→0)
+        for col in X.select_dtypes(include=["bool"]).columns:
+            X[col] = X[col].astype(int)
+
         # Only coerce object columns that look numeric (e.g. "3.14") — leave string cols
         # like Sex/Embarked as object so the OHE preprocessor can encode them properly.
         def _try_numeric(col):
@@ -546,6 +570,9 @@ class ModelTrainer:
     def _select_metric(task: str, y: pd.Series) -> str:
         """Use F1-weighted for imbalanced classification; accuracy for balanced; R2 for regression."""
         if task != "classification":
+            return "r2"
+        # Double-check: integer series with many unique values is regression, not classification
+        if pd.api.types.is_integer_dtype(y) and y.nunique() > 20:
             return "r2"
         counts = y.value_counts(normalize=True)
         if len(counts) >= 2 and counts.iloc[-1] < 0.20:
@@ -654,7 +681,8 @@ class ModelTrainer:
 
         return models
 
-    def _build_preprocessor(self, X: pd.DataFrame, high_dim: bool = False) -> ColumnTransformer:
+    def _build_preprocessor(self, X: pd.DataFrame, high_dim: bool = False,
+                             task: str = "classification") -> ColumnTransformer:
         num = get_numeric_cols(X)
         cat = get_categorical_cols(X)
         transformers = []
@@ -662,13 +690,19 @@ class ModelTrainer:
             steps: list = [("scaler", StandardScaler())]
             if high_dim and len(num) > 50:
                 k = min(50, len(num))
-                steps.append(("selector", SelectKBest(f_regression, k=k)))
+                # Use task-appropriate scorer: f_classif for classification, f_regression for regression
+                scorer = f_classif if task == "classification" else f_regression
+                steps.append(("selector", SelectKBest(scorer, k=k)))
             from sklearn.pipeline import Pipeline as _P
             transformers.append(("num", _P(steps), num))
         if cat:
             transformers.append(("cat", self._make_ohe(), cat))
         if not transformers:
-            raise ValueError("No usable feature columns found.")
+            raise ValueError(
+                "No usable feature columns found. "
+                "Ensure the DataFrame has at least one numeric or string/categorical column "
+                "besides the target."
+            )
         return ColumnTransformer(transformers, remainder="drop")
 
     def _build_ensemble(
@@ -868,7 +902,7 @@ class ModelTrainer:
                     f"{top_names}[/bold cyan]\n"
                     f"[dim]Meta-learner: LogisticRegression/Ridge with out-of-fold predictions[/dim]"
                 )
-                preprocessor = self._build_preprocessor(X_train, high_dim=profile["high_dim"])
+                preprocessor = self._build_preprocessor(X_train, high_dim=profile["high_dim"], task=task)
                 models_map   = self._get_models(task, y_train, extra_models=extra_models, profile=profile)
                 named_pipes: List[Tuple[str, Any]] = []
                 for name in top_names:
@@ -934,7 +968,12 @@ class ModelTrainer:
         return result
 
     def _compute_metrics(self, pipe, X_test, y_test, task) -> Dict[str, float]:
-        y_pred = pipe.predict(X_test)
+        if len(X_test) == 0:
+            return {}
+        try:
+            y_pred = pipe.predict(X_test)
+        except Exception:
+            return {}
         if task == "classification":
             metrics: Dict[str, float] = {
                 "accuracy": accuracy_score(y_test, y_pred),

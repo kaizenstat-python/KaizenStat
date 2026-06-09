@@ -148,11 +148,16 @@ class Reporter:
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
         n_rows, n_cols = df.shape
 
+        model_cls = (
+            "RandomForestClassifier(n_estimators=100, random_state=42)"
+            if task == "classification"
+            else "RandomForestRegressor(n_estimators=100, random_state=42)"
+        )
         code = f'''#!/usr/bin/env python3
 """
 KaizenStat Auto-Generated Pipeline
 Generated: {timestamp}
-Dataset:   {n_rows} rows × {n_cols} columns
+Dataset:   {n_rows} rows x {n_cols} columns
 Target:    {target}
 Task:      {task}
 """
@@ -168,21 +173,21 @@ from sklearn.metrics import accuracy_score, r2_score
 import warnings
 warnings.filterwarnings("ignore")
 
-# ── 1. Load data ──────────────────────────────────────────────────────────────
+# 1. Load data
 df = pd.read_csv("your_data.csv")
 target = "{target}"
 
-# ── 2. Health check (KaizenStat) ──────────────────────────────────────────────
+# 2. Health check (KaizenStat)
 from kaizenstat import health
 health_result = health.report(df, target=target)
 print(f"Health Score: {{health_result.score}}/100")
 
-# ── 3. Fix data ────────────────────────────────────────────────────────────────
+# 3. Fix data
 from kaizenstat import fix
 fix_plan = fix.plan(df, target=target, safe=True)
 df = fix_plan.apply(df)
 
-# ── 4. Prepare features ────────────────────────────────────────────────────────
+# 4. Prepare features
 X = df.drop(columns=[target])
 y = df[target]
 
@@ -194,33 +199,36 @@ preprocessor = ColumnTransformer(transformers=[
     ("cat", OneHotEncoder(handle_unknown="ignore", sparse_output=False), categorical_features),
 ])
 
-# ── 5. Train/test split ────────────────────────────────────────────────────────
+# 5. Train/test split
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# ── 6. Build pipeline ──────────────────────────────────────────────────────────
-model = {"RandomForestClassifier(n_estimators=100, random_state=42)" if task == "classification"
-         else "RandomForestRegressor(n_estimators=100, random_state=42)"}
+# 6. Build pipeline
+model = {model_cls}
 pipe = Pipeline([("preprocessor", preprocessor), ("model", model)])
 
-# ── 7. Train ───────────────────────────────────────────────────────────────────
+# 7. Train
 pipe.fit(X_train, y_train)
 train_score = pipe.score(X_train, y_train)
 test_score  = pipe.score(X_test, y_test)
 print(f"Train Score: {{train_score:.4f}}")
 print(f"Test Score:  {{test_score:.4f}}")
 
-# ── 8. Debug ───────────────────────────────────────────────────────────────────
+# 8. Debug
 from kaizenstat import debug
 debug.model_failure(pipe, X_train, X_test, y_train, y_test)
 
-# ── 9. Export model ────────────────────────────────────────────────────────────
+# 9. Export model
 import joblib
 joblib.dump(pipe, "model.joblib")
 print("Model exported to model.joblib")
 '''
 
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(code)
+        try:
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(code)
+        except OSError as exc:
+            console.print(f"[yellow]⚠ Could not write codegen to '{output_path}': {exc}[/yellow]")
+            raise
         console.print(f"[bold green]✓ Pipeline code generated → {output_path}[/bold green]")
         return output_path
 

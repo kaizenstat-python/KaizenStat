@@ -311,18 +311,21 @@ class Validator:
     def _check_leakage(self, df, target):
         issues = []
         y_num = pd.to_numeric(df[target], errors="coerce")
+        # Skip correlation leakage check if target cannot be represented numerically
+        # (e.g. boolean, arbitrary string categories) — all-NaN y_num makes corr() meaningless
         num_cols = get_numeric_cols(df, exclude=[target])
         suspects = []
         leak_names = []
 
-        for col in num_cols:
-            try:
-                c = abs(df[col].corr(y_num))
-                if c > 0.98:
-                    suspects.append(f"{col}(r={c:.3f})")
-                    leak_names.append(col)
-            except Exception:
-                pass
+        if y_num.notna().sum() > 0:
+            for col in num_cols:
+                try:
+                    c = abs(df[col].corr(y_num))
+                    if pd.notna(c) and c > 0.98:
+                        suspects.append(f"{col}(r={c:.3f})")
+                        leak_names.append(col)
+                except Exception:
+                    pass
 
         # Unique-value proxy: flag non-target object/string columns where every row is unique (ID-like).
         # Continuous numeric columns (float) with all-unique values are normal and NOT leakage.

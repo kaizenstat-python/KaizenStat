@@ -99,19 +99,28 @@ def _apply_action(df: pd.DataFrame, action: FixAction) -> pd.DataFrame:
 
     if act == "fill_median":
         val = df[col].median()
+        if pd.isna(val):
+            return df  # all-NaN column — nothing to fill with
         df = df.copy()
         df[col] = df[col].fillna(val)
         return df
 
     if act == "fill_mean":
         val = df[col].mean()
+        if pd.isna(val):
+            return df
         df = df.copy()
         df[col] = df[col].fillna(val)
         return df
 
     if act == "fill_mode":
         mode = df[col].mode()
-        val = mode.iloc[0] if not mode.empty else "Unknown"
+        if mode.empty:
+            return df  # all-NaN column — nothing to fill with
+        val = mode.iloc[0]
+        # Guard: never fill a numeric column with a non-numeric fallback
+        if pd.api.types.is_numeric_dtype(df[col]) and not isinstance(val, (int, float, np.integer, np.floating)):
+            return df
         df = df.copy()
         df[col] = df[col].fillna(val)
         return df

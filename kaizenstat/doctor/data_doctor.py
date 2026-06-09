@@ -668,6 +668,17 @@ class DataDoctor:
         self._require_fit()
         if not self._target:
             raise ValueError("A target column is required. Call fit(df, target=...).")
+
+        # Same single-class guard as train()
+        df_check = self._active_df
+        if self._target in df_check.columns:
+            y_check = df_check[self._target].dropna()
+            if y_check.nunique() < 2:
+                raise ValueError(
+                    f"Target column '{self._target}' has only {y_check.nunique()} unique class(es). "
+                    f"Need at least 2 classes to train."
+                )
+
         self._train_result = self._trainer.train_auto(
             self._active_df, self._target,
             test_size=test_size, cv=cv,
@@ -800,7 +811,17 @@ class DataDoctor:
                 else df.drop(columns=[self._target])
             le = self._train_result.label_encoder
             if le is not None:
+                known = set(le.classes_)
+                mask = y.isin(known)
+                if not mask.all():
+                    y = y[mask]
+                    X = X.loc[y.index] if hasattr(X, "loc") else X[mask]
                 y = pd.Series(le.transform(y), index=y.index, name=self._target)
+            if len(y) == 0:
+                raise RuntimeError(
+                    "trust_score: no rows remain after filtering to known labels. "
+                    "Retrain the model with doctor.train() before calling trust_score()."
+                )
             try:
                 _, X_test, _, y_test = train_test_split(
                     X, y, test_size=test_size,

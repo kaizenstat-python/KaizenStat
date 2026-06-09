@@ -241,6 +241,11 @@ class ModelDebugger:
         y_test: pd.Series,
     ) -> DebugResult:
         """Full failure analysis using priority-based classification."""
+        if len(X_test) == 0 or len(y_test) == 0:
+            raise ValueError(
+                "debug_model: test set is empty — cannot diagnose model failure. "
+                "Ensure the dataset has enough rows for a train/test split."
+            )
         task        = detect_task_type(y_test)
         train_score = model.score(X_train, y_train)
         test_score  = model.score(X_test, y_test)
@@ -410,6 +415,9 @@ class ModelDebugger:
         Returns a dict {feature: accuracy_drop} sorted descending.
         High values = feature is critical. Negative = feature was hurting the model.
         """
+        if len(X) == 0:
+            console.print("[yellow]feature_impact: empty dataset — returning empty dict[/yellow]")
+            return {}
         task     = detect_task_type(y)
         baseline = model.score(X, y)
 
@@ -682,8 +690,11 @@ class ModelDebugger:
             label, severity, confidence = "excellent", "LOW", 0.95
         elif gap <= 0.05 and test >= 0.80:
             label, severity, confidence = "healthy", "LOW", 0.90
-        elif gap <= 0.05:
+        elif gap <= 0.05 and test >= 0.70:
             label, severity, confidence = "acceptable", "LOW", 0.80
+        elif gap <= 0.05:
+            # Small gap but low test score — both models are equally bad (underfitting-like)
+            label, severity, confidence = "underfitting", "HIGH", 0.80
 
         # --- Level 3: Early overfitting ---
         elif gap <= 0.10:   # 0.05 < gap <= 0.10
@@ -1050,6 +1061,8 @@ class ModelDebugger:
 
         # Fallback: permutation importance (model-agnostic, always correct shape)
         try:
+            if len(X_test) == 0:
+                return None
             scoring = "accuracy" if task == "classification" else "r2"
             pi = permutation_importance(
                 model, X_test, y_test,

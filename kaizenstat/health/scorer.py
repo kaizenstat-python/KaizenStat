@@ -177,7 +177,14 @@ class HealthScorer:
         if not target or target not in df.columns:
             return 0.0
         y = df[target].dropna()
-        if y.dtype != "object" and y.nunique() > 20:
+        # Skip imbalance check for regression targets (continuous numeric with many unique values)
+        # and for text/string targets with too many classes to be a classification problem.
+        n_unique = y.nunique()
+        if pd.api.types.is_float_dtype(y) and n_unique > 20:
+            return 0.0
+        if pd.api.types.is_integer_dtype(y) and n_unique > 50:
+            return 0.0
+        if y.dtype == "object" and n_unique > 100:
             return 0.0
         counts = y.value_counts(normalize=True)
         if len(counts) <= 1:
@@ -223,7 +230,9 @@ class HealthScorer:
         num_cols = get_numeric_cols(df, exclude=[target] if target else None)
         if not num_cols:
             return 0.0
-        skew = df[num_cols].skew().abs()
+        skew = df[num_cols].skew().abs().dropna()  # dropna guards against all-NaN columns
+        if skew.empty:
+            return 0.0
         high = (skew > 3).sum()
         if high == 0:
             return 0.0

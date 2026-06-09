@@ -191,14 +191,26 @@ class Suggester:
             gap = getattr(dr, "gap", 0.0)
             test_score = getattr(dr, "test_score", 0.0)
             label = getattr(dr, "label", "")
+            task = getattr(dr, "task", "classification")
             if "overfitting" in label and gap > 0:
-                gain = f"Closing {gap:.0%} gap could recover +{min(int(gap * 80), 20)}% test accuracy"
-            elif "underfitting" in label and test_score < 0.7:
-                gain = f"Stronger model expected to add +{int((0.8 - test_score) * 100)}–{int((0.85 - test_score) * 100)}% accuracy"
+                gain = f"Closing {gap:.2f} gap could recover +{min(int(gap * 80), 20)}% test score"
+            elif "underfitting" in label:
+                if task == "regression":
+                    # R² can be negative — quote absolute values rather than % of a negative
+                    gain = "Stronger model (XGBoost/LightGBM) expected to substantially improve R²"
+                elif test_score < 0.7:
+                    gain = f"Stronger model expected to add +{int((0.8 - test_score) * 100)}–{int((0.85 - test_score) * 100)}% accuracy"
+                else:
+                    gain = "Expected +5–10% accuracy gain from a more powerful architecture"
             elif "leakage" in label:
                 gain = "Removing leakage yields realistic score (likely -20–40% inflated accuracy)"
             else:
-                gain = f"Expected +5–15% test score improvement (current: {test_score:.0%})"
+                if task == "regression":
+                    gain = "Expected +0.05–0.15 R² improvement"
+                elif test_score > 0:
+                    gain = f"Expected +5–15% test score improvement (current: {test_score:.0%})"
+                else:
+                    gain = "Expected improvement after addressing data quality issues"
             suggs.append(Suggestion(
                 priority=start_priority + len(suggs),
                 category="Model Debug",
