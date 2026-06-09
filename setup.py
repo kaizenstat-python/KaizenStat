@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="kaizenstat",
-    version="0.5.8",
+    version="0.5.9",
     author="Masuddar Rahman",
     url="https://www.kaizenstat.com",
     description="Data Health Measurement and ML Model Debugging Framework",

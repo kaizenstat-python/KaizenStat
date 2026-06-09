@@ -94,7 +94,16 @@ class DataDoctor:
     """
     KaizenStat's primary interface — mirrors the sklearn API style.
 
-    Typical workflow::
+    Zero-friction usage (new ML users)::
+
+        # Option A — one line from file to model
+        model = DataDoctor.quick_train("data.csv", target="price")
+
+        # Option B — full pipeline with one call
+        doctor = DataDoctor("data.csv", target="Survived")
+        doctor.run()
+
+    Advanced usage (full control)::
 
         doctor = DataDoctor()
         doctor.fit(df, target="survived")
@@ -107,7 +116,17 @@ class DataDoctor:
         doctor.report()
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        data: Optional[Any] = None,
+        target: Optional[str] = None,
+    ) -> None:
+        """
+        Args:
+            data:   Optional path/URL string or pandas DataFrame.
+                    If provided, calls load() or fit() automatically.
+            target: Target column name. Required for supervised tasks.
+        """
         self._df: Optional[pd.DataFrame] = None
         self._target: Optional[str] = None
         self._fixed_df: Optional[pd.DataFrame] = None
@@ -146,6 +165,22 @@ class DataDoctor:
 
         # Reliability / trust layer (mode-agnostic)
         self._trust = TrustAnalyzer()
+
+        # Constructor shortcut — accept path/URL string or DataFrame directly
+        if data is not None:
+            if isinstance(data, pd.DataFrame):
+                self.fit(data, target=target)
+            elif isinstance(data, str):
+                self.load(data)
+                if target is not None:
+                    self.fit(target=target)
+            else:
+                raise TypeError(
+                    f"DataDoctor() accepts a file path string or a pandas DataFrame, "
+                    f"got {type(data).__name__}."
+                )
+        elif target is not None and self._df is not None:
+            self._target = target
 
     # ------------------------------------------------------------------ #
     # 0. load                                                              #
@@ -902,6 +937,271 @@ class DataDoctor:
             console.print(f"[dim]Removed {removed} empty document(s) after cleaning[/dim]")
             out = out.loc[keep].reset_index(drop=True)
         return out
+
+    # ------------------------------------------------------------------ #
+    # Zero-friction API                                                    #
+    # ------------------------------------------------------------------ #
+
+    @classmethod
+    def quick_train(
+        cls,
+        data: Any,
+        target: str,
+        tune: bool = False,
+        report: bool = True,
+        export_path: Optional[str] = None,
+    ) -> Any:
+        """
+        One-line path from raw data to a production-ready model.
+
+        Usage::
+
+            model = DataDoctor.quick_train("titanic.csv", target="Survived")
+            model = DataDoctor.quick_train(df, target="price", tune=True)
+
+        Args:
+            data:        File path, URL, or pandas DataFrame.
+            target:      Name of the target column.
+            tune:        If True, run hyperparameter search on the best model.
+            report:      If True, save an HTML report alongside the model.
+            export_path: Where to save the model (default: ``<target>_model.joblib``).
+
+        Returns:
+            A trained ``KaizenStatPipeline`` — call ``.predict(df)`` directly on raw data.
+        """
+        doctor = cls(data, target=target)
+        doctor.run(tune=tune, report=report, export_path=export_path)
+        return doctor._train_result.pipeline  # type: ignore[union-attr]
+
+    def run(
+        self,
+        tune: bool = False,
+        report: bool = True,
+        export_path: Optional[str] = None,
+        cv: int = 5,
+    ) -> "DataDoctor":
+        """
+        Run the full KaizenStat pipeline in one call:
+        health → fix → train → debug → improve → explain → report → export.
+
+        Perfect for new ML users who want the best model with zero pipeline knowledge.
+
+        Usage::
+
+            doctor = DataDoctor("titanic.csv", target="Survived")
+            doctor.run()
+
+        Args:
+            tune:        Run hyperparameter search on the best model.
+            report:      Save an HTML report (default True).
+            export_path: Model export path (default: ``<target>_model.joblib``).
+            cv:          Number of cross-validation folds.
+
+        Returns:
+            self — all results accessible as ``doctor.train_result``, etc.
+        """
+        self._require_fit()
+        if not self._target:
+            raise ValueError("A target column is required. Call fit(df, target=...) first.")
+
+        console.print(Panel.fit(
+            "[bold cyan]KaizenStat AutoPilot[/bold cyan] — running full pipeline\n"
+            "[dim]health → fix → train → debug → improve → explain → report[/dim]",
+            border_style="cyan",
+            title="[bold]KaizenStat · run()[/bold]",
+        ))
+
+        # Step 1 — Health check
+        console.print("\n[bold cyan]① Data Health[/bold cyan]")
+        self.health()
+
+        # Step 2 — Fix (safe only — never lose data)
+        console.print("\n[bold cyan]② Auto-Fix[/bold cyan]")
+        self.fix(safe=True)
+
+        # Step 3 — Train best model
+        console.print("\n[bold cyan]③ Training[/bold cyan]")
+        self.train(cv=cv, tune=tune)
+
+        # Step 4 — Debug
+        console.print("\n[bold cyan]④ Diagnosing[/bold cyan]")
+        try:
+            self.debug_model()
+        except Exception as _exc:
+            console.print(f"[dim]debug_model skipped: {_exc}[/dim]")
+
+        # Step 5 — Improve suggestions
+        console.print("\n[bold cyan]⑤ Improvement Suggestions[/bold cyan]")
+        try:
+            self.improve()
+        except Exception as _exc:
+            console.print(f"[dim]improve skipped: {_exc}[/dim]")
+
+        # Step 6 — Plain-English explanation
+        console.print("\n[bold cyan]⑥ Explanation[/bold cyan]")
+        try:
+            self.explain()
+        except Exception as _exc:
+            console.print(f"[dim]explain skipped: {_exc}[/dim]")
+
+        # Step 7 — HTML report
+        if report:
+            _report_name = f"{self._target}_report.html".replace(" ", "_")
+            console.print(f"\n[bold cyan]⑦ Report → {_report_name}[/bold cyan]")
+            try:
+                self.report(output_path=_report_name)
+            except Exception as _exc:
+                console.print(f"[dim]report skipped: {_exc}[/dim]")
+
+        # Step 8 — Export model
+        _export = export_path or f"{self._target}_model.joblib".replace(" ", "_")
+        console.print(f"\n[bold cyan]⑧ Exporting model → {_export}[/bold cyan]")
+        try:
+            self.export_model(path=_export)
+        except Exception as _exc:
+            console.print(f"[dim]export skipped: {_exc}[/dim]")
+
+        # Final summary banner
+        tr = self._train_result
+        if tr is not None:
+            score_color = "green" if tr.test_score >= 0.80 else ("yellow" if tr.test_score >= 0.65 else "red")
+            console.print(Panel.fit(
+                f"[bold green]✓ Pipeline complete![/bold green]\n\n"
+                f"  Model:       [bold]{tr.model_name}[/bold]\n"
+                f"  Test score:  [{score_color}]{tr.test_score:.4f}[/{score_color}]  "
+                f"(train: {tr.train_score:.4f})\n"
+                f"  Task:        {tr.task}\n"
+                f"  Exported to: [bold]{_export}[/bold]\n\n"
+                f"[dim]Next steps:[/dim]\n"
+                f"  model = joblib.load('{_export}')\n"
+                f"  model.predict(your_new_data)  [dim]# works on raw DataFrames[/dim]",
+                title="[bold]KaizenStat · Done[/bold]",
+                border_style="green",
+            ))
+        return self
+
+    def explain(self) -> str:
+        """
+        Print a plain-English explanation of the trained model.
+
+        Describes accuracy, top features, what the model learned, and what to watch out for.
+        Designed for new ML users and non-technical stakeholders.
+
+        Usage::
+
+            doctor.train()
+            doctor.explain()
+
+        Returns:
+            Explanation string (also printed to terminal).
+        """
+        self._require_fit()
+        if self._train_result is None:
+            raise RuntimeError("No trained model found. Call train() or run() first.")
+
+        tr = self._train_result
+        lines = []
+
+        # ── Score headline ────────────────────────────────────────────────
+        if tr.task == "classification":
+            acc = tr.metrics.get("accuracy", tr.test_score)
+            f1  = tr.metrics.get("f1", None)
+            score_line = f"Your model correctly predicts [bold]{acc:.0%}[/bold] of cases"
+            if f1 is not None:
+                score_line += f" (F1 score: {f1:.0%})"
+        else:
+            r2  = tr.metrics.get("r2", tr.test_score)
+            mae = tr.metrics.get("mae", None)
+            if r2 >= 0.90:
+                quality = "excellent"
+            elif r2 >= 0.75:
+                quality = "good"
+            elif r2 >= 0.50:
+                quality = "moderate"
+            else:
+                quality = "weak"
+            score_line = f"Your model explains [bold]{max(0, r2):.0%}[/bold] of the variance ({quality} fit)"
+            if mae is not None:
+                score_line += f".  Average prediction error: {mae:.4g}"
+
+        lines.append(score_line + ".")
+
+        # ── Overfitting / health ───────────────────────────────────────────
+        gap = tr.train_score - tr.test_score
+        if gap > 0.20:
+            lines.append(
+                f"⚠️  [yellow]The model is memorising training data (gap={gap:.2f}) — "
+                f"it may perform worse on truly new data. Add regularisation or more training samples.[/yellow]"
+            )
+        elif gap > 0.08:
+            lines.append(
+                f"ℹ️  Slight overfitting (gap={gap:.2f}). Performance may drop a little on completely new data."
+            )
+        else:
+            lines.append(f"✅  The model generalises well — training and test scores are close (gap={gap:.2f}).")
+
+        # ── Top features ─────────────────────────────────────────────────
+        fi = getattr(tr, "feature_names", None)
+        debug_fi = getattr(self._debug_result, "feature_importances", None) if self._debug_result else None
+        if debug_fi is not None and not getattr(debug_fi, "empty", True):
+            top = list(debug_fi.head(5).index)
+            lines.append(
+                f"🔍  Top {len(top)} most important features: "
+                + ", ".join(f"[bold]{f}[/bold]" for f in top)
+            )
+        elif fi:
+            lines.append(
+                f"🔍  Model was trained on {len(fi)} feature(s): "
+                + ", ".join(fi[:5]) + ("…" if len(fi) > 5 else "")
+            )
+
+        # ── Model choice ─────────────────────────────────────────────────
+        model_notes = {
+            "RandomForest":      "Random Forest — robust, handles mixed data well, resists noise.",
+            "GradientBoosting":  "Gradient Boosting — high accuracy, learns sequentially from errors.",
+            "LogisticRegression":"Logistic Regression — fast, interpretable, works best on linearly separable data.",
+            "XGBoost":           "XGBoost — industry-standard boosting, often wins Kaggle competitions.",
+            "LightGBM":          "LightGBM — fast boosting optimised for large datasets.",
+            "Ridge":             "Ridge Regression — linear model with L2 regularisation.",
+            "ExtraTreesClassifier": "Extra Trees — fast ensemble, adds extra randomness to reduce overfitting.",
+            "ExtraTreesRegressor":  "Extra Trees — fast ensemble, adds extra randomness to reduce overfitting.",
+        }
+        base_name = tr.model_name.split("(")[0].split("+")[0].strip()
+        note = model_notes.get(base_name)
+        if note:
+            lines.append(f"🤖  Algorithm: {note}")
+        else:
+            lines.append(f"🤖  Algorithm: [bold]{tr.model_name}[/bold]")
+
+        # ── Data health ───────────────────────────────────────────────────
+        if self._health_result is not None:
+            h = self._health_result
+            if h.score >= 85:
+                lines.append(f"📊  Data quality: [green]excellent[/green] ({h.score}/100) — no major issues.")
+            elif h.score >= 65:
+                lines.append(f"📊  Data quality: [yellow]good[/yellow] ({h.score}/100). Minor issues were auto-fixed.")
+            else:
+                lines.append(
+                    f"📊  Data quality: [red]needs work[/red] ({h.score}/100). "
+                    f"Fixing data quality may improve the model further."
+                )
+
+        # ── How to use it ─────────────────────────────────────────────────
+        lines.append(
+            "\n[dim]How to use this model on new data:[/dim]\n"
+            "  import joblib, pandas as pd\n"
+            f"  model = joblib.load('{self._target}_model.joblib')\n"
+            "  predictions = model.predict(your_new_dataframe)"
+        )
+
+        explanation = "\n".join(lines)
+        console.print(Panel(
+            explanation,
+            title="[bold]KaizenStat · Model Explanation[/bold]",
+            border_style="cyan",
+            expand=False,
+        ))
+        return explanation
 
     # ------------------------------------------------------------------ #
 
