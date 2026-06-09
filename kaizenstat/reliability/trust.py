@@ -42,6 +42,11 @@ class TrustReport:
     failure_slices: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
 
+    @property
+    def score(self) -> int:
+        """Alias for trust_score — use either trust.score or trust.trust_score."""
+        return self.trust_score
+
     def display(self) -> None:
         color = ("green" if self.trust_score >= 80 else
                  "yellow" if self.trust_score >= 60 else "red")
